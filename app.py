@@ -9,8 +9,6 @@ import streamlit as st
 
 st.set_page_config(page_title="RuokaVirta HexMap", layout="wide")
 
-# --- Basic settings ---------------------------------------------------------
-
 TYPE_COLORS = {
     "Havainto": "#fff3bf",
     "Este": "#ffc9c9",
@@ -20,18 +18,18 @@ TYPE_COLORS = {
     "Kokeilu": "#ffd8a8",
 }
 
+# Pointy-top axial hex grid.
+# These directions now match the six visible sides better than the previous version.
 SIDES = {
     "→ oikealle": (1, 0, 0),
-    "↗ yläoikealle": (0, -1, -60),
-    "↖ ylävasemmalle": (-1, -1, -120),
+    "↗ yläoikealle": (1, -1, -60),
+    "↖ ylävasemmalle": (0, -1, -120),
     "← vasemmalle": (-1, 0, 180),
-    "↙ alavasemmalle": (0, 1, 120),
-    "↘ alaoikealle": (1, 1, 60),
+    "↙ alavasemmalle": (-1, 1, 120),
+    "↘ alaoikealle": (0, 1, 60),
 }
 
 REL_TYPES = ["liittyy", "mahdollistaa", "estää", "vahvistaa", "heikentää"]
-
-# --- Session state ---------------------------------------------------------
 
 def init_state():
     if "cards" not in st.session_state:
@@ -44,8 +42,6 @@ def init_state():
         st.session_state.message = ""
 
 init_state()
-
-# --- Data functions --------------------------------------------------------
 
 def get_card(card_id):
     return next((c for c in st.session_state.cards if c["id"] == card_id), None)
@@ -62,7 +58,6 @@ def occupied_positions(exclude_id=None):
 def add_card(title, card_type="Havainto", note=""):
     card_id = st.session_state.next_id
     st.session_state.next_id += 1
-
     is_first = len([c for c in st.session_state.cards if c.get("placed")]) == 0
 
     st.session_state.cards.append({
@@ -91,12 +86,11 @@ def add_examples():
         ("Ravintolan tilauspäätös", "Havainto"),
         ("Noutopiste", "Kokeilu"),
     ]
-
     for title, card_type in examples:
         add_card(title, card_type)
 
-    coords = [(0, 0), (1, 0), (0, -1), (-1, -1), (-1, 0), (0, 1)]
-    rotations = [0, 0, -60, -120, 180, 120]
+    coords = [(0, 0), (1, 0), (1, -1), (0, -1), (-1, 0), (0, 1)]
+    rotations = [0, 0, -60, -120, 180, 60]
     for c, (q, r), rot in zip(st.session_state.cards, coords, rotations):
         c["placed"] = True
         c["q"] = q
@@ -106,7 +100,7 @@ def add_examples():
     st.session_state.links = [
         {"from_card_id": 1, "to_card_id": 2, "side": "→ oikealle", "relationship_type": "vahvistaa", "explanation": ""},
         {"from_card_id": 1, "to_card_id": 3, "side": "↗ yläoikealle", "relationship_type": "mahdollistaa", "explanation": ""},
-        {"from_card_id": 4, "to_card_id": 5, "side": "→ oikealle", "relationship_type": "liittyy", "explanation": ""},
+        {"from_card_id": 4, "to_card_id": 5, "side": "← vasemmalle", "relationship_type": "liittyy", "explanation": ""},
     ]
     st.session_state.message = "Esimerkkikartta lisätty."
 
@@ -117,7 +111,6 @@ def connect_cards(source_id, target_id, side, rel_type="liittyy", explanation=""
 
     source = get_card(source_id)
     target = get_card(target_id)
-
     if source is None or target is None:
         st.session_state.message = "Korttia ei löytynyt."
         return
@@ -133,7 +126,6 @@ def connect_cards(source_id, target_id, side, rel_type="liittyy", explanation=""
     new_r = source["r"] + dr
 
     occupied = occupied_positions(exclude_id=target_id if force_move else None)
-
     if (new_q, new_r) in occupied:
         st.session_state.message = f"Tällä sivulla on jo kortti #{occupied[(new_q, new_r)]}. Valitse toinen sivu."
         return
@@ -155,39 +147,43 @@ def connect_cards(source_id, target_id, side, rel_type="liittyy", explanation=""
         "explanation": explanation.strip(),
         "created_at": datetime.now().isoformat(timespec="seconds"),
     })
-
     st.session_state.message = f"Kytketty #{target_id} kortin #{source_id} sivuun."
 
-# --- Drawing functions -----------------------------------------------------
+# --- Drawing: pointy-top hex grid ------------------------------------------
 
-def hex_to_pixel(q, r, size=88):
-    # Axial coordinates, pointy-top visual hexagons.
-    x = size * 1.52 * q
-    y = size * 1.32 * (r + q / 2)
+HEX_W = 136
+HEX_H = 156
+HEX_SIDE = 78  # roughly half of height
+
+def hex_to_pixel(q, r):
+    # Pointy-top axial coordinates:
+    # x = sqrt(3)*s*(q + r/2), y = 1.5*s*r
+    # Values tuned to the CSS hex width/height above.
+    x = HEX_W * (q + r / 2)
+    y = (HEX_H * 0.75) * r
     return x, y
 
-def map_bounds(cards, size=88):
+def map_bounds(cards):
     placed = [c for c in cards if c.get("placed")]
     if not placed:
         return 0, 0, 760, 440
 
-    points = [hex_to_pixel(c["q"], c["r"], size) for c in placed]
-    min_x = min(x for x, _ in points) - 130
-    max_x = max(x for x, _ in points) + 280
-    min_y = min(y for _, y in points) - 120
-    max_y = max(y for _, y in points) + 230
+    points = [hex_to_pixel(c["q"], c["r"]) for c in placed]
+    min_x = min(x for x, _ in points) - 150
+    max_x = max(x for x, _ in points) + 300
+    min_y = min(y for _, y in points) - 150
+    max_y = max(y for _, y in points) + 300
 
     return min_x, min_y, max(760, int(max_x - min_x)), max(440, int(max_y - min_y))
 
-def card_html(card, min_x, min_y, size=88):
-    x, y = hex_to_pixel(card["q"], card["r"], size)
+def card_html(card, min_x, min_y):
+    x, y = hex_to_pixel(card["q"], card["r"])
     left = x - min_x
     top = y - min_y
     bg = TYPE_COLORS.get(card.get("type", "Havainto"), "#f1f3f5")
     title = html.escape(card.get("title", ""))
     rot = int(card.get("rotation", 0))
 
-    # Outer hex rotates; inner text counter-rotates, so text stays horizontal.
     return (
         f'<div class="hex-wrap" style="left:{left}px; top:{top}px; --rot:{rot}deg;">'
         f'<div class="hex" style="background:{bg};">'
@@ -197,25 +193,24 @@ def card_html(card, min_x, min_y, size=88):
         f'</div></div></div>'
     )
 
-def link_svg(link, min_x, min_y, size=88):
+def link_svg(link, min_x, min_y):
     a = get_card(link["from_card_id"])
     b = get_card(link["to_card_id"])
     if not a or not b or not a.get("placed") or not b.get("placed"):
         return ""
 
-    ax, ay = hex_to_pixel(a["q"], a["r"], size)
-    bx, by = hex_to_pixel(b["q"], b["r"], size)
+    ax, ay = hex_to_pixel(a["q"], a["r"])
+    bx, by = hex_to_pixel(b["q"], b["r"])
 
-    x1 = ax - min_x + 78
-    y1 = ay - min_y + 68
-    x2 = bx - min_x + 78
-    y2 = by - min_y + 68
+    x1 = ax - min_x + HEX_W / 2
+    y1 = ay - min_y + HEX_H / 2
+    x2 = bx - min_x + HEX_W / 2
+    y2 = by - min_y + HEX_H / 2
 
     return f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" class="link-line" />'
 
 def render_map():
     placed = [c for c in st.session_state.cards if c.get("placed")]
-
     if not placed:
         inner = '<div class="empty-map">Lisää ensimmäinen kortti. Se tulee kartan keskelle.</div>'
         st.markdown(f'<div class="hex-map-outer">{inner}</div>', unsafe_allow_html=True)
@@ -250,20 +245,12 @@ def export_excel_bytes():
     output.seek(0)
     return output.getvalue()
 
-# --- CSS -------------------------------------------------------------------
-
 st.markdown(
     """
 <style>
 .block-container { padding-top: 1.5rem; max-width: 1500px; }
 h1 { margin-bottom: 0.2rem; }
 .subtitle { color:#6c757d; margin-bottom: 1.2rem; }
-.section-card {
-    border:1px solid #dee2e6;
-    border-radius:14px;
-    padding:16px;
-    background:white;
-}
 .hex-map-outer {
     width: 100%;
     min-height: 460px;
@@ -276,10 +263,7 @@ h1 { margin-bottom: 0.2rem; }
     background-size: 28px 28px;
     padding: 14px;
 }
-.hex-map {
-    position: relative;
-    background: transparent;
-}
+.hex-map { position: relative; background: transparent; }
 .empty-map {
     height: 420px;
     display:flex;
@@ -300,23 +284,23 @@ h1 { margin-bottom: 0.2rem; }
 }
 .hex-wrap {
     position:absolute;
-    width:156px;
-    height:136px;
+    width:136px;
+    height:156px;
     z-index:2;
     transform: rotate(var(--rot));
-    transform-origin: 78px 68px;
+    transform-origin: 68px 78px;
 }
 .hex {
-    width:156px;
-    height:136px;
-    clip-path: polygon(25% 4%, 75% 4%, 100% 50%, 75% 96%, 25% 96%, 0% 50%);
+    width:136px;
+    height:156px;
+    clip-path: polygon(50% 0%, 94% 25%, 94% 75%, 50% 100%, 6% 75%, 6% 25%);
     display:flex;
     align-items:center;
     justify-content:center;
     box-shadow: 0 1px 2px rgba(0,0,0,.08);
 }
 .hex-inner {
-    width:112px;
+    width:104px;
     text-align:center;
     transform: rotate(calc(-1 * var(--rot)));
     transform-origin:center center;
@@ -357,8 +341,6 @@ h1 { margin-bottom: 0.2rem; }
 """,
     unsafe_allow_html=True,
 )
-
-# --- UI --------------------------------------------------------------------
 
 st.title("RuokaVirta HexMap")
 st.markdown('<div class="subtitle">Kevyt kuusikulmakartta työpajan keskusteluun. Lisää kortteja ja kytke ne toistensa sivuihin.</div>', unsafe_allow_html=True)
@@ -418,10 +400,6 @@ with left:
                 force_move = st.checkbox("Siirrä, jos kortti on jo kartalla")
             submitted = st.form_submit_button("Kytke")
             if submitted:
-                # Defaults when expander has not been touched
-                rel_type = rel_type if "rel_type" in locals() else "liittyy"
-                explanation = explanation if "explanation" in locals() else ""
-                force_move = force_move if "force_move" in locals() else False
                 connect_cards(source_options[source_label], target_options[target_label], side, rel_type, explanation, force_move)
                 st.rerun()
 
