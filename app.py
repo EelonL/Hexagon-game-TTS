@@ -1,6 +1,10 @@
 import json
 import html
 from datetime import datetime
+from io import BytesIO
+
+import pandas as pd
+import streamlit as st
 
 st.set_page_config(page_title="RuokaVirta HexMap", layout="wide")
 
@@ -80,8 +84,7 @@ def card_html(card):
     bg = TYPE_COLORS.get(card["type"], "#f1f3f5")
     title = html.escape(card.get("title", ""))
     meta = html.escape(f'{card.get("type", "")} · {card.get("theme", "")}'.strip(" ·"))
-
-    # Tärkeää: HTML ilman rivinvaihtoja ja sisennyksiä.
+    # Tärkeää: palautetaan HTML ilman rivinvaihtoja ja sisennyksiä.
     # Muuten Streamlit/Markdown voi tulkita osan kortista koodilohkoksi.
     return (
         f'<div class="hex" style="background:{bg};">'
@@ -177,8 +180,8 @@ with right:
     if not st.session_state.cards:
         st.info("Kortteja ei vielä ole. Lisää kortti tai paina 'Lisää esimerkit'.")
     else:
-        html = '<div class="hex-grid">' + "".join(card_html(c) for c in st.session_state.cards) + "</div>"
-        st.markdown(html, unsafe_allow_html=True)
+        cards_html = '<div class="hex-grid">' + "".join(card_html(c) for c in st.session_state.cards) + "</div>"
+        st.markdown(cards_html, unsafe_allow_html=True)
 
     st.divider()
     st.subheader("Korttien tarkennukset")
