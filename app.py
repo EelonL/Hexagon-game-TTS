@@ -18,14 +18,15 @@ TYPE_COLORS = {
     "Kokeilu": "#ffd8a8",
 }
 
-# Pointy-top axial hex grid.
+# Flat-top hex grid. This matches a symmetric regular hexagon:
+# width = 2*s, height = sqrt(3)*s.
 SIDES = {
     "→ oikealle": (1, 0, 0),
-    "↗ yläoikealle": (1, -1, -60),
-    "↖ ylävasemmalle": (0, -1, -120),
+    "↗ yläoikealle": (0, -1, 60),
+    "↖ ylävasemmalle": (-1, -1, 120),
     "← vasemmalle": (-1, 0, 180),
-    "↙ alavasemmalle": (-1, 1, 120),
-    "↘ alaoikealle": (0, 1, 60),
+    "↙ alavasemmalle": (0, 1, -120),
+    "↘ alaoikealle": (1, 1, -60),
 }
 
 REL_TYPES = ["liittyy", "mahdollistaa", "estää", "vahvistaa", "heikentää"]
@@ -39,10 +40,20 @@ def init_state():
         st.session_state.next_id = 1
     if "message" not in st.session_state:
         st.session_state.message = ""
+    if "error_message" not in st.session_state:
+        st.session_state.error_message = ""
     if "last_source_id" not in st.session_state:
         st.session_state.last_source_id = None
 
 init_state()
+
+def set_success(msg):
+    st.session_state.message = msg
+    st.session_state.error_message = ""
+
+def set_error(msg):
+    st.session_state.error_message = msg
+    st.session_state.message = ""
 
 def get_card(card_id):
     return next((c for c in st.session_state.cards if c["id"] == card_id), None)
@@ -72,11 +83,11 @@ def add_card(title, card_type="Havainto", note=""):
         "rotation": 0,
         "created_at": datetime.now().isoformat(timespec="seconds"),
     })
-    st.session_state.message = f"Lisätty kortti #{card_id}"
+    set_success(f"Lisätty kortti #{card_id}")
 
 def add_examples():
     if st.session_state.cards:
-        st.session_state.message = "Tyhjennä kartta ennen esimerkkien lisäämistä."
+        set_error("Tyhjennä kartta ennen esimerkkien lisäämistä.")
         return
 
     examples = [
@@ -90,8 +101,8 @@ def add_examples():
     for title, card_type in examples:
         add_card(title, card_type)
 
-    coords = [(0, 0), (1, 0), (1, -1), (0, -1), (-1, 0), (0, 1)]
-    rotations = [0, 0, -60, -120, 180, 60]
+    coords = [(0, 0), (1, 0), (0, -1), (-1, -1), (-1, 0), (0, 1)]
+    rotations = [0, 0, 60, 120, 180, -120]
     for c, (q, r), rot in zip(st.session_state.cards, coords, rotations):
         c["placed"] = True
         c["q"] = q
@@ -103,17 +114,17 @@ def add_examples():
         {"from_card_id": 1, "to_card_id": 3, "side": "↗ yläoikealle", "relationship_type": "mahdollistaa", "explanation": ""},
         {"from_card_id": 4, "to_card_id": 5, "side": "← vasemmalle", "relationship_type": "liittyy", "explanation": ""},
     ]
-    st.session_state.message = "Esimerkkikartta lisätty."
+    set_success("Esimerkkikartta lisätty.")
 
 def connect_cards(source_id, target_id, side, rel_type="liittyy", explanation="", force_move=False):
     if source_id == target_id:
-        st.session_state.message = "Valitse kaksi eri korttia."
+        set_error("Valitse kaksi eri korttia.")
         return
 
     source = get_card(source_id)
     target = get_card(target_id)
     if source is None or target is None:
-        st.session_state.message = "Korttia ei löytynyt."
+        set_error("Korttia ei löytynyt.")
         return
 
     if not source.get("placed"):
@@ -128,11 +139,17 @@ def connect_cards(source_id, target_id, side, rel_type="liittyy", explanation=""
 
     occupied = occupied_positions(exclude_id=target_id if force_move else None)
     if (new_q, new_r) in occupied:
-        st.session_state.message = f"Tällä sivulla on jo kortti #{occupied[(new_q, new_r)]}. Valitse toinen sivu."
+        blocking_id = occupied[(new_q, new_r)]
+        blocking = get_card(blocking_id)
+        blocking_title = blocking["title"] if blocking else ""
+        set_error(
+            f"Paikka on jo varattu: kortin #{source_id} sivulla '{side}' on jo "
+            f"kortti #{blocking_id} {blocking_title}. Valitse toinen sivu."
+        )
         return
 
     if target.get("placed") and not force_move:
-        st.session_state.message = "Kohdekortti on jo kartalla. Valitse siirto vain, jos haluat siirtää sen uuteen kohtaan."
+        set_error("Kohdekortti on jo kartalla. Valitse siirto vain, jos haluat siirtää sen uuteen kohtaan.")
         return
 
     target["placed"] = True
@@ -149,19 +166,20 @@ def connect_cards(source_id, target_id, side, rel_type="liittyy", explanation=""
         "created_at": datetime.now().isoformat(timespec="seconds"),
     })
     st.session_state.last_source_id = source_id
-    st.session_state.message = f"Kytketty #{target_id} kortin #{source_id} sivuun {side}."
+    set_success(f"Kytketty #{target_id} kortin #{source_id} sivuun {side}.")
 
-# --- Drawing ---------------------------------------------------------------
+# --- Drawing: symmetric flat-top regular hexagons --------------------------
 
-HEX_W = 136
-HEX_H = 156
-GAP = 10  # pieni väli, jotta tahot näkyvät eikä synny vahingossa "kiinni"-illuusiota
+HEX_W = 150
+HEX_H = 130
+GAP = 10
 
 def hex_to_pixel(q, r):
-    # Pointy-top axial coordinates.
-    # GAP spreads the invisible grid a little, while preserving the six-neighbour logic.
-    x = (HEX_W + GAP) * (q + r / 2)
-    y = (HEX_H * 0.75 + GAP) * r
+    # Flat-top axial coordinates:
+    # x step horizontally is 3/4 width + gap.
+    # diagonal neighbours shift by half height.
+    x = (HEX_W * 0.75 + GAP) * q
+    y = (HEX_H + GAP) * (r + q / 2)
     return x, y
 
 def map_bounds(cards):
@@ -171,9 +189,9 @@ def map_bounds(cards):
 
     points = [hex_to_pixel(c["q"], c["r"]) for c in placed]
     min_x = min(x for x, _ in points) - 170
-    max_x = max(x for x, _ in points) + 320
+    max_x = max(x for x, _ in points) + 340
     min_y = min(y for _, y in points) - 170
-    max_y = max(y for _, y in points) + 320
+    max_y = max(y for _, y in points) + 310
 
     return min_x, min_y, max(760, int(max_x - min_x)), max(440, int(max_y - min_y))
 
@@ -199,14 +217,13 @@ def side_midpoint(card, side, min_x, min_y):
     cx = x - min_x + HEX_W / 2
     cy = y - min_y + HEX_H / 2
 
-    # Midpoints of the visible sides for a pointy-top hex.
     offsets = {
-        "→ oikealle": (HEX_W * 0.43, 0),
-        "↗ yläoikealle": (HEX_W * 0.22, -HEX_H * 0.37),
-        "↖ ylävasemmalle": (-HEX_W * 0.22, -HEX_H * 0.37),
-        "← vasemmalle": (-HEX_W * 0.43, 0),
-        "↙ alavasemmalle": (-HEX_W * 0.22, HEX_H * 0.37),
-        "↘ alaoikealle": (HEX_W * 0.22, HEX_H * 0.37),
+        "→ oikealle": (HEX_W * 0.50, 0),
+        "↗ yläoikealle": (HEX_W * 0.25, -HEX_H * 0.50),
+        "↖ ylävasemmalle": (-HEX_W * 0.25, -HEX_H * 0.50),
+        "← vasemmalle": (-HEX_W * 0.50, 0),
+        "↙ alavasemmalle": (-HEX_W * 0.25, HEX_H * 0.50),
+        "↘ alaoikealle": (HEX_W * 0.25, HEX_H * 0.50),
     }
     dx, dy = offsets.get(side, (0, 0))
     return cx + dx, cy + dy
@@ -318,23 +335,23 @@ h1 { margin-bottom: 0.2rem; }
 }
 .hex-wrap {
     position:absolute;
-    width:136px;
-    height:156px;
+    width:150px;
+    height:130px;
     z-index:2;
     transform: rotate(var(--rot));
-    transform-origin: 68px 78px;
+    transform-origin: 75px 65px;
 }
 .hex {
-    width:136px;
-    height:156px;
-    clip-path: polygon(50% 0%, 94% 25%, 94% 75%, 50% 100%, 6% 75%, 6% 25%);
+    width:150px;
+    height:130px;
+    clip-path: polygon(25% 6.7%, 75% 6.7%, 100% 50%, 75% 93.3%, 25% 93.3%, 0% 50%);
     display:flex;
     align-items:center;
     justify-content:center;
     box-shadow: 0 1px 2px rgba(0,0,0,.08);
 }
 .hex-inner {
-    width:104px;
+    width:110px;
     text-align:center;
     transform: rotate(calc(-1 * var(--rot)));
     transform-origin:center center;
@@ -379,7 +396,9 @@ h1 { margin-bottom: 0.2rem; }
 st.title("RuokaVirta HexMap")
 st.markdown('<div class="subtitle">Kevyt kuusikulmakartta työpajan keskusteluun. Lisää kortteja ja kytke ne toistensa sivuihin.</div>', unsafe_allow_html=True)
 
-if st.session_state.message:
+if st.session_state.error_message:
+    st.error(st.session_state.error_message)
+elif st.session_state.message:
     st.success(st.session_state.message)
 
 left, right = st.columns([0.8, 1.7], gap="large")
@@ -408,6 +427,7 @@ with left:
             st.session_state.links = []
             st.session_state.next_id = 1
             st.session_state.message = "Kartta tyhjennetty."
+            st.session_state.error_message = ""
             st.session_state.last_source_id = None
             st.rerun()
 
