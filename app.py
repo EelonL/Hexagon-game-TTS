@@ -1,3 +1,4 @@
+
 import json
 import html
 from datetime import datetime
@@ -8,31 +9,68 @@ import streamlit as st
 
 st.set_page_config(page_title="RuokaVirta HexMap", layout="wide")
 
-CARD_TYPES = ["Havainto", "Este", "Mahdollisuus", "Toimija", "Tieto", "Kokeilu", "Muuttuja"]
-REL_TYPES = ["liittyy", "vaikuttaa", "estää", "mahdollistaa", "aiheuttaa", "riippuu", "vahvistaa", "heikentää"]
-
 TYPE_COLORS = {
     "Havainto": "#fff3bf",
     "Este": "#ffc9c9",
     "Mahdollisuus": "#d3f9d8",
     "Toimija": "#d0ebff",
     "Tieto": "#e5dbff",
-    "Kokeilu": "#ffe8cc",
-    "Muuttuja": "#c5f6fa",
+    "Kokeilu": "#ffd8a8",
+    "Muuttuja": "#c3fae8",
 }
 
+SIDES = {
+    "Oikea": (1, 0, 0),
+    "Yläoikea": (0, -1, -60),
+    "Ylävasen": (-1, -1, -120),
+    "Vasen": (-1, 0, 180),
+    "Alavasen": (0, 1, 120),
+    "Alaoikea": (1, 1, 60),
+}
+
+REL_TYPES = [
+    "vaikuttaa",
+    "mahdollistaa",
+    "estää",
+    "riippuu",
+    "aiheuttaa",
+    "vahvistaa",
+    "heikentää",
+    "muu yhteys",
+]
 
 def init_state():
-    st.session_state.setdefault("cards", [])
-    st.session_state.setdefault("links", [])
-    st.session_state.setdefault("next_id", 1)
+    if "cards" not in st.session_state:
+        st.session_state.cards = []
+    if "links" not in st.session_state:
+        st.session_state.links = []
+    if "next_id" not in st.session_state:
+        st.session_state.next_id = 1
+    if "message" not in st.session_state:
+        st.session_state.message = ""
 
+init_state()
+
+def get_card(card_id):
+    return next((c for c in st.session_state.cards if c["id"] == card_id), None)
+
+def occupied_positions(exclude_id=None):
+    pos = {}
+    for c in st.session_state.cards:
+        if exclude_id is not None and c["id"] == exclude_id:
+            continue
+        if c.get("placed"):
+            pos[(c.get("q", 0), c.get("r", 0))] = c["id"]
+    return pos
 
 def add_card(title, card_type, theme, actor, description):
-    title = (title or "").strip() or f"Uusi kortti {st.session_state.next_id}"
+    card_id = st.session_state.next_id
+    st.session_state.next_id += 1
+
+    placed = len([c for c in st.session_state.cards if c.get("placed")]) == 0
     card = {
-        "id": st.session_state.next_id,
-        "title": title,
+        "id": card_id,
+        "title": title.strip() or f"Uusi kortti {card_id}",
         "type": card_type,
         "theme": theme.strip(),
         "actor": actor.strip(),
@@ -42,183 +80,406 @@ def add_card(title, card_type, theme, actor, description):
         "metric": "",
         "data_source": "",
         "experiment": "",
+        "placed": placed,
+        "q": 0 if placed else None,
+        "r": 0 if placed else None,
+        "rotation": 0,
         "created_at": datetime.now().isoformat(timespec="seconds"),
     }
     st.session_state.cards.append(card)
-    st.session_state.next_id += 1
-
+    st.session_state.message = f"Lisätty kortti #{card_id}: {card['title']}"
 
 def add_examples():
+    if st.session_state.cards:
+        st.session_state.message = "Esimerkkejä ei lisätty, koska kortteja on jo olemassa."
+        return
     examples = [
-        ("Pienet toimituserät nostavat kustannuksia", "Este", "Kuljetus", "Tuottaja / kuljetus"),
-        ("Autot ajavat vajaana", "Havainto", "Kuljetus", "Kuljetusyrittäjä"),
-        ("Ravintola ei tiedä saatavuutta ajoissa", "Tieto", "Kysyntä", "Ravintola"),
-        ("Yhteinen tilausikkuna voisi auttaa", "Kokeilu", "Koordinointi", "Ravintolat / tuottajat"),
-        ("Kylmäketju rajoittaa yhteiskuljetuksia", "Este", "Kylmäketju", "Kuljetus"),
-        ("Sesonkivaihtelu lisää hävikkiriskiä", "Havainto", "Tarjonta", "Tuottaja"),
-        ("Saatavuustiedon ajantasaisuus", "Muuttuja", "Data", "Kaikki"),
+        ("Pienet toimituserät nostavat kustannuksia", "Este", "Kuljetus", "Tuottaja / kuljettaja", "Vajaakuormat ja noutojen hajanaisuus nostavat yksikkökustannusta."),
+        ("Ravintolat eivät tiedä saatavuutta ajoissa", "Este", "Data", "Ravintola", "Saatavuustiedon puute vaikeuttaa ruokalistasuunnittelua."),
+        ("Yhteinen tilausikkuna", "Mahdollisuus", "Koordinointi", "Tuottajat ja ravintolat", "Tilaukset kerätään tiettyyn aikaan, jolloin kuljetuksia voidaan yhdistää."),
+        ("Kylmäketjun vaatimukset", "Este", "Kylmäketju", "Kuljettaja", "Eri tuotteet tarvitsevat eri lämpötiloja."),
+        ("Täyttöaste", "Muuttuja", "Mittari", "Kuljettaja", "Kuljetuskapasiteetin käyttöaste."),
+        ("Noutopiste tai mikroterminaali", "Kokeilu", "Jakelu", "Kaikki toimijat", "Yksi paikka, johon tuotteita voidaan keskittää."),
     ]
-    for title, typ, theme, actor in examples:
-        add_card(title, typ, theme, actor, "")
+    for e in examples:
+        add_card(*e)
+    # Place examples into a small connected shape
+    coords = [(0,0), (1,0), (0,-1), (-1,-1), (-1,0), (0,1)]
+    for c, (q, r) in zip(st.session_state.cards, coords):
+        c["placed"] = True
+        c["q"] = q
+        c["r"] = r
+    st.session_state.message = "Esimerkkikortit lisätty."
 
+def connect_cards(source_id, target_id, side, rel_type, explanation, force_move=False):
+    if source_id == target_id:
+        st.session_state.message = "Lähtö- ja kohdekortti eivät voi olla sama kortti."
+        return
 
-def export_json():
-    data = {
-        "cards": st.session_state.cards,
-        "links": st.session_state.links,
-        "exported_at": datetime.now().isoformat(timespec="seconds"),
-    }
-    return json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+    source = get_card(source_id)
+    target = get_card(target_id)
+    if not source or not target:
+        st.session_state.message = "Korttia ei löytynyt."
+        return
 
+    if not source.get("placed"):
+        source["placed"] = True
+        source["q"] = 0
+        source["r"] = 0
+        source["rotation"] = 0
 
-def export_excel():
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        pd.DataFrame(st.session_state.cards).to_excel(writer, sheet_name="cards", index=False)
-        pd.DataFrame(st.session_state.links).to_excel(writer, sheet_name="links", index=False)
-    output.seek(0)
-    return output
+    dq, dr, rot = SIDES[side]
+    new_q = source["q"] + dq
+    new_r = source["r"] + dr
 
+    occ = occupied_positions(exclude_id=target_id if force_move else None)
+    if (new_q, new_r) in occ:
+        st.session_state.message = f"Paikka on jo käytössä kortilla #{occ[(new_q, new_r)]}. Valitse toinen sivu."
+        return
 
-def card_html(card):
+    if target.get("placed") and not force_move:
+        st.session_state.message = "Kohdekortti on jo kartalla. Valitse 'Siirrä kohdekortti uuteen paikkaan', jos haluat siirtää sen."
+        return
+
+    target["placed"] = True
+    target["q"] = new_q
+    target["r"] = new_r
+    target["rotation"] = rot
+
+    st.session_state.links.append({
+        "from_card_id": source_id,
+        "to_card_id": target_id,
+        "side": side,
+        "relationship_type": rel_type,
+        "explanation": explanation.strip(),
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    })
+    st.session_state.message = f"Kytketty #{target_id} kortin #{source_id} sivuun: {side}."
+
+def hex_to_pixel(q, r, size=86):
+    # Pointy-top axial coordinates.
+    # x/y values are tuned for CSS hexagons that are 150 x 130 px.
+    x = size * 1.52 * q
+    y = size * 1.32 * (r + q / 2)
+    return x, y
+
+def map_bounds(cards, size=86):
+    placed = [c for c in cards if c.get("placed")]
+    if not placed:
+        return 0, 0, 700, 360
+    pts = [hex_to_pixel(c["q"], c["r"], size) for c in placed]
+    min_x = min(x for x, y in pts) - 120
+    max_x = max(x for x, y in pts) + 260
+    min_y = min(y for x, y in pts) - 110
+    max_y = max(y for x, y in pts) + 220
+    return min_x, min_y, max_x - min_x, max_y - min_y
+
+def card_div(card, min_x, min_y, size=86):
+    x, y = hex_to_pixel(card["q"], card["r"], size)
+    left = x - min_x
+    top = y - min_y
     bg = TYPE_COLORS.get(card["type"], "#f1f3f5")
     title = html.escape(card.get("title", ""))
-    meta = html.escape(f'{card.get("type", "")} · {card.get("theme", "")}'.strip(" ·"))
-    # Tärkeää: palautetaan HTML ilman rivinvaihtoja ja sisennyksiä.
-    # Muuten Streamlit/Markdown voi tulkita osan kortista koodilohkoksi.
+    meta_parts = [card.get("type", ""), card.get("theme", "")]
+    meta = html.escape(" · ".join([p for p in meta_parts if p]))
+    rot = int(card.get("rotation", 0))
     return (
+        f'<div class="hex-wrap" style="left:{left}px; top:{top}px; --rot:{rot}deg;">'
         f'<div class="hex" style="background:{bg};">'
         f'<div class="hex-inner">'
         f'<div class="hex-id">#{card["id"]}</div>'
         f'<div class="hex-title">{title}</div>'
         f'<div class="hex-meta">{meta}</div>'
-        f'</div></div>'
+        f'</div></div></div>'
     )
 
+def line_svg(link, min_x, min_y, size=86):
+    a = get_card(link["from_card_id"])
+    b = get_card(link["to_card_id"])
+    if not a or not b or not a.get("placed") or not b.get("placed"):
+        return ""
+    ax, ay = hex_to_pixel(a["q"], a["r"], size)
+    bx, by = hex_to_pixel(b["q"], b["r"], size)
+    # centers of visual hexagons
+    x1 = ax - min_x + 75
+    y1 = ay - min_y + 65
+    x2 = bx - min_x + 75
+    y2 = by - min_y + 65
+    label = html.escape(link.get("relationship_type", ""))
+    mx, my = (x1 + x2) / 2, (y1 + y2) / 2
+    return (
+        f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" class="link-line" />'
+        f'<text x="{mx}" y="{my - 5}" class="link-label">{label}</text>'
+    )
 
-init_state()
+def render_map():
+    placed = [c for c in st.session_state.cards if c.get("placed")]
+    if not placed:
+        st.info("Kartalla ei ole vielä sijoitettuja kortteja. Ensimmäinen lisätty kortti sijoitetaan keskelle.")
+        return
 
-st.title("RuokaVirta HexMap")
-st.caption("Kevyt työpajasovellus ruokalogistiikan havaintojen, yhteyksien, muuttujien ja kokeilujen keräämiseen.")
+    min_x, min_y, width, height = map_bounds(st.session_state.cards)
+    width = max(700, int(width))
+    height = max(360, int(height))
+
+    svg_lines = "".join(line_svg(l, min_x, min_y) for l in st.session_state.links)
+    cards_html = "".join(card_div(c, min_x, min_y) for c in placed)
+
+    html_block = (
+        f'<div class="hex-map" style="width:{width}px;height:{height}px;">'
+        f'<svg class="link-layer" width="{width}" height="{height}">{svg_lines}</svg>'
+        f'{cards_html}'
+        f'</div>'
+    )
+    st.markdown(html_block, unsafe_allow_html=True)
+
+def export_json():
+    return json.dumps(
+        {"cards": st.session_state.cards, "links": st.session_state.links},
+        ensure_ascii=False,
+        indent=2,
+    )
+
+def export_excel_bytes():
+    output = BytesIO()
+    cards_df = pd.DataFrame(st.session_state.cards)
+    links_df = pd.DataFrame(st.session_state.links)
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        cards_df.to_excel(writer, index=False, sheet_name="cards")
+        links_df.to_excel(writer, index=False, sheet_name="links")
+    output.seek(0)
+    return output.getvalue()
 
 st.markdown(
     """
 <style>
-.hex-grid { display:flex; flex-wrap:wrap; gap:18px; align-items:center; margin-top: 1rem; }
-.hex { width: 170px; height: 148px; clip-path: polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%); display:flex; align-items:center; justify-content:center; padding: 12px; box-sizing:border-box; border:1px solid rgba(0,0,0,.15); }
-.hex-inner { text-align:center; max-width:135px; }
-.hex-id { font-size:11px; opacity:.65; }
-.hex-title { font-weight:700; font-size:14px; line-height:1.15; margin:6px 0; }
-.hex-meta { font-size:11px; opacity:.75; }
-.link-card { border:1px solid #ddd; border-radius:10px; padding:10px; margin-bottom:8px; background:#fff; }
+.block-container { padding-top: 2rem; max-width: 1500px; }
+.small-note { color:#6c757d; font-size:0.92rem; margin-bottom:1.5rem; }
+.hex-map-outer {
+    width: 100%;
+    overflow: auto;
+    border: 1px solid #dee2e6;
+    border-radius: 14px;
+    background:
+        radial-gradient(circle at 1px 1px, rgba(0,0,0,.06) 1px, transparent 0);
+    background-size: 26px 26px;
+    padding: 16px;
+}
+.hex-map {
+    position: relative;
+    margin: 0;
+    background: transparent;
+}
+.link-layer {
+    position:absolute;
+    left:0;
+    top:0;
+    z-index:1;
+    pointer-events:none;
+}
+.link-line {
+    stroke:#868e96;
+    stroke-width:2;
+    stroke-dasharray:5 5;
+}
+.link-label {
+    font-size:11px;
+    fill:#495057;
+    paint-order: stroke;
+    stroke:#ffffff;
+    stroke-width:3px;
+    stroke-linejoin:round;
+}
+.hex-wrap {
+    position:absolute;
+    width:150px;
+    height:130px;
+    z-index:2;
+    transform: rotate(var(--rot));
+    transform-origin: 75px 65px;
+}
+.hex {
+    width:150px;
+    height:130px;
+    clip-path: polygon(25% 4%, 75% 4%, 100% 50%, 75% 96%, 25% 96%, 0% 50%);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    box-shadow: 0 1px 2px rgba(0,0,0,.08);
+}
+.hex-inner {
+    width:112px;
+    text-align:center;
+    transform: rotate(calc(-1 * var(--rot)));
+    transform-origin:center center;
+    font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+}
+.hex-id {
+    font-size:10px;
+    color:#868e96;
+    margin-bottom:5px;
+}
+.hex-title {
+    font-weight:700;
+    color:#212529;
+    font-size:13px;
+    line-height:1.15;
+    overflow-wrap:anywhere;
+}
+.hex-meta {
+    margin-top:7px;
+    color:#6c757d;
+    font-size:10px;
+    line-height:1.15;
+    overflow-wrap:anywhere;
+}
+.unplaced {
+    border:1px dashed #adb5bd;
+    border-radius:12px;
+    padding:10px;
+    margin:6px 0;
+    background:#f8f9fa;
+}
+@media (max-width: 800px) {
+    .hex-map-outer { max-height: 520px; }
+}
 </style>
 """,
     unsafe_allow_html=True,
 )
 
-left, right = st.columns([1, 2])
+st.title("RuokaVirta HexMap")
+st.markdown('<div class="small-note">Sivukytkentäinen kuusikulmakartta ruokalogistiikan havaintojen, yhteyksien, muuttujien ja kokeilujen keräämiseen.</div>', unsafe_allow_html=True)
+
+if st.session_state.message:
+    st.success(st.session_state.message)
+
+left, right = st.columns([0.95, 1.55], gap="large")
 
 with left:
     st.subheader("Lisää kortti")
     with st.form("add_card_form", clear_on_submit=True):
         title = st.text_input("Kortin otsikko")
-        card_type = st.selectbox("Korttityyppi", CARD_TYPES)
+        card_type = st.selectbox("Korttityyppi", list(TYPE_COLORS.keys()))
         theme = st.text_input("Teema", placeholder="esim. kuljetus, data, kylmäketju")
         actor = st.text_input("Toimija", placeholder="esim. tuottaja, ravintola, kuljettaja")
-        description = st.text_area("Lisäkuvaus", height=90)
+        description = st.text_area("Lisäkuvaus")
         submitted = st.form_submit_button("Lisää kortti")
         if submitted:
             add_card(title, card_type, theme, actor, description)
-            st.success("Kortti lisätty.")
+            st.rerun()
 
-    col_a, col_b = st.columns(2)
-    if col_a.button("Lisää esimerkit"):
-        add_examples()
-        st.success("Esimerkkikortit lisätty.")
-    if col_b.button("Tyhjennä kaikki"):
-        st.session_state.cards = []
-        st.session_state.links = []
-        st.session_state.next_id = 1
-        st.success("Tyhjennetty.")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Lisää esimerkit"):
+            add_examples()
+            st.rerun()
+    with c2:
+        if st.button("Tyhjennä kaikki"):
+            st.session_state.cards = []
+            st.session_state.links = []
+            st.session_state.next_id = 1
+            st.session_state.message = "Kartta tyhjennetty."
+            st.rerun()
 
     st.divider()
-    st.subheader("Yhdistä kortteja")
-    if len(st.session_state.cards) >= 2:
-        card_options = {f"#{c['id']} {c['title']}": c["id"] for c in st.session_state.cards}
-        with st.form("add_link_form", clear_on_submit=True):
-            from_label = st.selectbox("Kortti A", list(card_options.keys()), key="from_card")
-            to_label = st.selectbox("Kortti B", list(card_options.keys()), key="to_card")
-            rel_type = st.selectbox("Yhteyden tyyppi", REL_TYPES)
-            strength = st.slider("Yhteyden vahvuus", 1, 5, 3)
-            explanation = st.text_area("Miksi nämä liittyvät toisiinsa?", height=90)
-            link_submitted = st.form_submit_button("Lisää yhteys")
-            if link_submitted:
-                from_id = card_options[from_label]
-                to_id = card_options[to_label]
-                if from_id == to_id:
-                    st.warning("Valitse kaksi eri korttia.")
-                else:
-                    st.session_state.links.append({
-                        "from_card_id": from_id,
-                        "to_card_id": to_id,
-                        "relationship_type": rel_type,
-                        "strength": strength,
-                        "explanation": explanation.strip(),
-                        "created_at": datetime.now().isoformat(timespec="seconds"),
-                    })
-                    st.success("Yhteys lisätty.")
+    st.subheader("Sijoittamattomat kortit")
+    unplaced = [c for c in st.session_state.cards if not c.get("placed")]
+    if not unplaced:
+        st.caption("Ei sijoittamattomia kortteja.")
     else:
-        st.info("Lisää vähintään kaksi korttia, niin voit luoda yhteyksiä.")
-
-    st.divider()
-    st.subheader("Vie aineisto")
-    st.download_button("Lataa JSON", data=export_json(), file_name="ruokavirta_hexmap.json", mime="application/json")
-    st.download_button("Lataa Excel", data=export_excel(), file_name="ruokavirta_hexmap.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        for c in unplaced:
+            st.markdown(f'<div class="unplaced"><b>#{c["id"]} {html.escape(c["title"])}</b><br><small>{html.escape(c["type"])} · {html.escape(c.get("theme",""))}</small></div>', unsafe_allow_html=True)
 
 with right:
     st.subheader("Korttitila")
-    if not st.session_state.cards:
-        st.info("Kortteja ei vielä ole. Lisää kortti tai paina 'Lisää esimerkit'.")
+    st.markdown('<div class="hex-map-outer">', unsafe_allow_html=True)
+    render_map()
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    st.divider()
+    st.subheader("Kytke kortti sivuun")
+
+    if len(st.session_state.cards) < 2:
+        st.caption("Lisää vähintään kaksi korttia, jotta voit tehdä yhteyden.")
     else:
-        cards_html = '<div class="hex-grid">' + "".join(card_html(c) for c in st.session_state.cards) + "</div>"
-        st.markdown(cards_html, unsafe_allow_html=True)
+        placed_cards = [c for c in st.session_state.cards if c.get("placed")]
+        all_cards = st.session_state.cards
+        source_options = {f'#{c["id"]} {c["title"]}': c["id"] for c in placed_cards or all_cards}
+        target_options = {f'#{c["id"]} {c["title"]}': c["id"] for c in all_cards}
+
+        with st.form("connect_form"):
+            source_label = st.selectbox("Lähtökortti kartalla", list(source_options.keys()))
+            side = st.selectbox("Mihin sivuun kohdekortti asetetaan?", list(SIDES.keys()))
+            target_label = st.selectbox("Kohdekortti", list(target_options.keys()))
+            rel_type = st.selectbox("Yhteyden tyyppi", REL_TYPES)
+            explanation = st.text_area("Miksi nämä liittyvät toisiinsa?", placeholder="Kirjoita lyhyt perustelu yhteydelle.")
+            force_move = st.checkbox("Siirrä kohdekortti uuteen paikkaan, vaikka se olisi jo kartalla")
+            submitted = st.form_submit_button("Kytke kortit")
+            if submitted:
+                connect_cards(
+                    source_options[source_label],
+                    target_options[target_label],
+                    side,
+                    rel_type,
+                    explanation,
+                    force_move=force_move,
+                )
+                st.rerun()
 
     st.divider()
     st.subheader("Korttien tarkennukset")
+
     if st.session_state.cards:
-        selected = st.selectbox("Valitse muokattava kortti", [f"#{c['id']} {c['title']}" for c in st.session_state.cards])
-        selected_id = int(selected.split(" ")[0].replace("#", ""))
-        card = next(c for c in st.session_state.cards if c["id"] == selected_id)
-        with st.form("edit_card_form"):
+        options = {f'#{c["id"]} {c["title"]}': c["id"] for c in st.session_state.cards}
+        selected_label = st.selectbox("Valitse muokattava kortti", list(options.keys()))
+        card = get_card(options[selected_label])
+        with st.form("details_form"):
             cluster = st.text_input("Klusteri", value=card.get("cluster", ""))
             variable = st.text_input("Muuttujaehdotus", value=card.get("variable", ""), placeholder="esim. täyttöaste, toimituserän koko")
-            metric = st.text_input("Mahdollinen mittari", value=card.get("metric", ""), placeholder="esim. kg/toimitus, €/kg, tuntia/viikko")
+            metric = st.text_input("Mittari", value=card.get("metric", ""))
             data_source = st.text_input("Mahdollinen datalähde", value=card.get("data_source", ""))
-            experiment = st.text_area("Kokeiluidea", value=card.get("experiment", ""), height=90)
-            save = st.form_submit_button("Tallenna tarkennukset")
-            if save:
+            experiment = st.text_area("Kokeiluidea", value=card.get("experiment", ""))
+            if st.form_submit_button("Tallenna tarkennukset"):
                 card["cluster"] = cluster.strip()
                 card["variable"] = variable.strip()
                 card["metric"] = metric.strip()
                 card["data_source"] = data_source.strip()
                 card["experiment"] = experiment.strip()
-                st.success("Tarkennukset tallennettu.")
+                st.session_state.message = f"Tarkennukset tallennettu kortille #{card['id']}."
+                st.rerun()
+    else:
+        st.caption("Ei kortteja vielä.")
 
     st.divider()
-    st.subheader("Yhteydet")
-    if not st.session_state.links:
-        st.caption("Ei yhteyksiä vielä.")
-    else:
-        id_to_title = {c["id"]: c["title"] for c in st.session_state.cards}
-        for i, link in enumerate(st.session_state.links, start=1):
-            st.markdown(
-                f"""
-<div class="link-card">
-<b>{i}. #{link['from_card_id']} {id_to_title.get(link['from_card_id'], '')}</b><br>
-→ <b>#{link['to_card_id']} {id_to_title.get(link['to_card_id'], '')}</b><br>
-Tyyppi: {link['relationship_type']} · Vahvuus: {link['strength']}<br>
-<i>{link.get('explanation','')}</i>
-</div>
-""",
-                unsafe_allow_html=True,
-            )
+    st.subheader("Vienti ja tuonti")
+
+    st.download_button(
+        "Lataa JSON",
+        data=export_json(),
+        file_name="ruokavirta_hexmap.json",
+        mime="application/json",
+    )
+
+    if st.session_state.cards:
+        st.download_button(
+            "Lataa Excel",
+            data=export_excel_bytes(),
+            file_name="ruokavirta_hexmap.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    uploaded = st.file_uploader("Tuo JSON", type=["json"])
+    if uploaded is not None:
+        try:
+            data = json.load(uploaded)
+            st.session_state.cards = data.get("cards", [])
+            st.session_state.links = data.get("links", [])
+            if st.session_state.cards:
+                st.session_state.next_id = max(c["id"] for c in st.session_state.cards) + 1
+            else:
+                st.session_state.next_id = 1
+            st.session_state.message = "JSON tuotu onnistuneesti."
+            st.rerun()
+        except Exception as e:
+            st.error(f"JSON-tuonti epäonnistui: {e}")
