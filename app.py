@@ -1,9 +1,6 @@
 import json
+import html
 from datetime import datetime
-from io import BytesIO
-
-import pandas as pd
-import streamlit as st
 
 st.set_page_config(page_title="RuokaVirta HexMap", layout="wide")
 
@@ -81,17 +78,19 @@ def export_excel():
 
 def card_html(card):
     bg = TYPE_COLORS.get(card["type"], "#f1f3f5")
-    title = card["title"].replace("<", "&lt;").replace(">", "&gt;")
-    meta = f'{card["type"]} · {card.get("theme", "")}'.strip(" ·")
-    return f"""
-    <div class="hex" style="background:{bg};">
-      <div class="hex-inner">
-        <div class="hex-id">#{card['id']}</div>
-        <div class="hex-title">{title}</div>
-        <div class="hex-meta">{meta}</div>
-      </div>
-    </div>
-    """
+    title = html.escape(card.get("title", ""))
+    meta = html.escape(f'{card.get("type", "")} · {card.get("theme", "")}'.strip(" ·"))
+
+    # Tärkeää: HTML ilman rivinvaihtoja ja sisennyksiä.
+    # Muuten Streamlit/Markdown voi tulkita osan kortista koodilohkoksi.
+    return (
+        f'<div class="hex" style="background:{bg};">'
+        f'<div class="hex-inner">'
+        f'<div class="hex-id">#{card["id"]}</div>'
+        f'<div class="hex-title">{title}</div>'
+        f'<div class="hex-meta">{meta}</div>'
+        f'</div></div>'
+    )
 
 
 init_state()
