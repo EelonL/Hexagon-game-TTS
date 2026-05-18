@@ -18,15 +18,17 @@ TYPE_COLORS = {
     "Kokeilu": "#ffd8a8",
 }
 
-# Flat-top hex grid. This matches a symmetric regular hexagon:
-# width = 2*s, height = sqrt(3)*s.
+# Flat-top hex grid with two basis vectors:
+# E  = (1, 0)
+# SE = (0, 1)
+# This makes the six side-neighbours unambiguous and easy to check.
 SIDES = {
-    "→ oikealle": (1, 0, 0),
-    "↗ yläoikealle": (0, -1, 60),
-    "↖ ylävasemmalle": (-1, -1, 120),
-    "← vasemmalle": (-1, 0, 180),
-    "↙ alavasemmalle": (0, 1, -120),
-    "↘ alaoikealle": (1, 1, -60),
+    "→ oikealle": (1, 0),
+    "↗ yläoikealle": (1, -1),
+    "↖ ylävasemmalle": (0, -1),
+    "← vasemmalle": (-1, 0),
+    "↙ alavasemmalle": (-1, 1),
+    "↘ alaoikealle": (0, 1),
 }
 
 REL_TYPES = ["liittyy", "mahdollistaa", "estää", "vahvistaa", "heikentää"]
@@ -58,14 +60,27 @@ def set_error(msg):
 def get_card(card_id):
     return next((c for c in st.session_state.cards if c["id"] == card_id), None)
 
+def card_pos(card):
+    return (int(card.get("a", card.get("q", 0))), int(card.get("b", card.get("r", 0))))
+
 def occupied_positions(exclude_id=None):
     positions = {}
     for c in st.session_state.cards:
         if exclude_id is not None and c["id"] == exclude_id:
             continue
         if c.get("placed"):
-            positions[(c.get("q", 0), c.get("r", 0))] = c["id"]
+            positions[card_pos(c)] = c["id"]
     return positions
+
+def migrate_old_coords():
+    # Allows JSON/state from previous versions to keep working.
+    for c in st.session_state.cards:
+        if "a" not in c and "q" in c:
+            c["a"] = c.get("q", 0)
+        if "b" not in c and "r" in c:
+            c["b"] = c.get("r", 0)
+
+migrate_old_coords()
 
 def add_card(title, card_type="Havainto", note=""):
     card_id = st.session_state.next_id
@@ -78,9 +93,8 @@ def add_card(title, card_type="Havainto", note=""):
         "type": card_type,
         "note": note.strip(),
         "placed": is_first,
-        "q": 0 if is_first else None,
-        "r": 0 if is_first else None,
-        "rotation": 0,
+        "a": 0 if is_first else None,
+        "b": 0 if is_first else None,
         "created_at": datetime.now().isoformat(timespec="seconds"),
     })
     set_success(f"Lisätty kortti #{card_id}")
@@ -101,13 +115,11 @@ def add_examples():
     for title, card_type in examples:
         add_card(title, card_type)
 
-    coords = [(0, 0), (1, 0), (0, -1), (-1, -1), (-1, 0), (0, 1)]
-    rotations = [0, 0, 60, 120, 180, -120]
-    for c, (q, r), rot in zip(st.session_state.cards, coords, rotations):
+    coords = [(0, 0), (1, 0), (1, -1), (0, -1), (-1, 0), (0, 1)]
+    for c, (a, b) in zip(st.session_state.cards, coords):
         c["placed"] = True
-        c["q"] = q
-        c["r"] = r
-        c["rotation"] = rot
+        c["a"] = a
+        c["b"] = b
 
     st.session_state.links = [
         {"from_card_id": 1, "to_card_id": 2, "side": "→ oikealle", "relationship_type": "vahvistaa", "explanation": ""},
@@ -115,6 +127,12 @@ def add_examples():
         {"from_card_id": 4, "to_card_id": 5, "side": "← vasemmalle", "relationship_type": "liittyy", "explanation": ""},
     ]
     set_success("Esimerkkikartta lisätty.")
+
+def remove_links_involving(card_id):
+    st.session_state.links = [
+        l for l in st.session_state.links
+        if l.get("from_card_id") != card_id and l.get("to_card_id") != card_id
+    ]
 
 def connect_cards(source_id, target_id, side, rel_type="liittyy", explanation="", force_move=False):
     if source_id == target_id:
@@ -129,17 +147,18 @@ def connect_cards(source_id, target_id, side, rel_type="liittyy", explanation=""
 
     if not source.get("placed"):
         source["placed"] = True
-        source["q"] = 0
-        source["r"] = 0
-        source["rotation"] = 0
+        source["a"] = 0
+        source["b"] = 0
 
-    dq, dr, rot = SIDES[side]
-    new_q = source["q"] + dq
-    new_r = source["r"] + dr
+    source_a, source_b = card_pos(source)
+    da, db = SIDES[side]
+    new_a = source_a + da
+    new_b = source_b + db
 
+    # Important: always check the intended grid slot before moving anything.
     occupied = occupied_positions(exclude_id=target_id if force_move else None)
-    if (new_q, new_r) in occupied:
-        blocking_id = occupied[(new_q, new_r)]
+    if (new_a, new_b) in occupied:
+        blocking_id = occupied[(new_a, new_b)]
         blocking = get_card(blocking_id)
         blocking_title = blocking["title"] if blocking else ""
         set_error(
@@ -152,10 +171,12 @@ def connect_cards(source_id, target_id, side, rel_type="liittyy", explanation=""
         set_error("Kohdekortti on jo kartalla. Valitse siirto vain, jos haluat siirtää sen uuteen kohtaan.")
         return
 
+    if force_move:
+        remove_links_involving(target_id)
+
     target["placed"] = True
-    target["q"] = new_q
-    target["r"] = new_r
-    target["rotation"] = rot
+    target["a"] = new_a
+    target["b"] = new_b
 
     st.session_state.links.append({
         "from_card_id": source_id,
@@ -168,18 +189,24 @@ def connect_cards(source_id, target_id, side, rel_type="liittyy", explanation=""
     st.session_state.last_source_id = source_id
     set_success(f"Kytketty #{target_id} kortin #{source_id} sivuun {side}.")
 
-# --- Drawing: symmetric flat-top regular hexagons --------------------------
+# --- Drawing ---------------------------------------------------------------
 
 HEX_W = 150
-HEX_H = 130
-GAP = 10
+HEX_H = 129.9
+GAP = 12
 
-def hex_to_pixel(q, r):
-    # Flat-top axial coordinates:
-    # x step horizontally is 3/4 width + gap.
-    # diagonal neighbours shift by half height.
-    x = (HEX_W * 0.75 + GAP) * q
-    y = (HEX_H + GAP) * (r + q / 2)
+# Regular flat-top hex dimensions:
+# side length s = HEX_W / 2
+# height = sqrt(3) * s
+# neighbour E center dx = 1.5*s = 0.75*HEX_W
+# neighbour SE center dx = 0.75*s = 0.375*HEX_W, dy = HEX_H/2
+DX_E = HEX_W * 0.75 + GAP
+DX_SE = HEX_W * 0.375 + GAP * 0.5
+DY_SE = HEX_H * 0.5 + GAP * 0.5
+
+def hex_to_pixel(a, b):
+    x = a * DX_E + b * DX_SE
+    y = b * DY_SE
     return x, y
 
 def map_bounds(cards):
@@ -187,7 +214,7 @@ def map_bounds(cards):
     if not placed:
         return 0, 0, 760, 440
 
-    points = [hex_to_pixel(c["q"], c["r"]) for c in placed]
+    points = [hex_to_pixel(*card_pos(c)) for c in placed]
     min_x = min(x for x, _ in points) - 170
     max_x = max(x for x, _ in points) + 340
     min_y = min(y for _, y in points) - 170
@@ -196,15 +223,16 @@ def map_bounds(cards):
     return min_x, min_y, max(760, int(max_x - min_x)), max(440, int(max_y - min_y))
 
 def card_html(card, min_x, min_y):
-    x, y = hex_to_pixel(card["q"], card["r"])
+    a, b = card_pos(card)
+    x, y = hex_to_pixel(a, b)
     left = x - min_x
     top = y - min_y
     bg = TYPE_COLORS.get(card.get("type", "Havainto"), "#f1f3f5")
     title = html.escape(card.get("title", ""))
-    rot = int(card.get("rotation", 0))
 
+    # No visual rotation. This keeps the hexagons symmetric and text horizontal.
     return (
-        f'<div class="hex-wrap" style="left:{left}px; top:{top}px; --rot:{rot}deg;">'
+        f'<div class="hex-wrap" style="left:{left}px; top:{top}px;">'
         f'<div class="hex" style="background:{bg};">'
         f'<div class="hex-inner">'
         f'<div class="hex-id">#{card["id"]}</div>'
@@ -213,7 +241,7 @@ def card_html(card, min_x, min_y):
     )
 
 def side_midpoint(card, side, min_x, min_y):
-    x, y = hex_to_pixel(card["q"], card["r"])
+    x, y = hex_to_pixel(*card_pos(card))
     cx = x - min_x + HEX_W / 2
     cy = y - min_y + HEX_H / 2
 
@@ -336,15 +364,13 @@ h1 { margin-bottom: 0.2rem; }
 .hex-wrap {
     position:absolute;
     width:150px;
-    height:130px;
+    height:129.9px;
     z-index:2;
-    transform: rotate(var(--rot));
-    transform-origin: 75px 65px;
 }
 .hex {
     width:150px;
-    height:130px;
-    clip-path: polygon(25% 6.7%, 75% 6.7%, 100% 50%, 75% 93.3%, 25% 93.3%, 0% 50%);
+    height:129.9px;
+    clip-path: polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%);
     display:flex;
     align-items:center;
     justify-content:center;
@@ -353,8 +379,6 @@ h1 { margin-bottom: 0.2rem; }
 .hex-inner {
     width:110px;
     text-align:center;
-    transform: rotate(calc(-1 * var(--rot)));
-    transform-origin:center center;
     font-family: system-ui, -apple-system, Segoe UI, sans-serif;
 }
 .hex-id {
