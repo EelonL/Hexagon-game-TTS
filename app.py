@@ -19,7 +19,6 @@ TYPE_COLORS = {
 }
 
 # Pointy-top axial hex grid.
-# These directions now match the six visible sides better than the previous version.
 SIDES = {
     "→ oikealle": (1, 0, 0),
     "↗ yläoikealle": (1, -1, -60),
@@ -40,6 +39,8 @@ def init_state():
         st.session_state.next_id = 1
     if "message" not in st.session_state:
         st.session_state.message = ""
+    if "last_source_id" not in st.session_state:
+        st.session_state.last_source_id = None
 
 init_state()
 
@@ -147,20 +148,20 @@ def connect_cards(source_id, target_id, side, rel_type="liittyy", explanation=""
         "explanation": explanation.strip(),
         "created_at": datetime.now().isoformat(timespec="seconds"),
     })
-    st.session_state.message = f"Kytketty #{target_id} kortin #{source_id} sivuun."
+    st.session_state.last_source_id = source_id
+    st.session_state.message = f"Kytketty #{target_id} kortin #{source_id} sivuun {side}."
 
-# --- Drawing: pointy-top hex grid ------------------------------------------
+# --- Drawing ---------------------------------------------------------------
 
 HEX_W = 136
 HEX_H = 156
-HEX_SIDE = 78  # roughly half of height
+GAP = 10  # pieni väli, jotta tahot näkyvät eikä synny vahingossa "kiinni"-illuusiota
 
 def hex_to_pixel(q, r):
-    # Pointy-top axial coordinates:
-    # x = sqrt(3)*s*(q + r/2), y = 1.5*s*r
-    # Values tuned to the CSS hex width/height above.
-    x = HEX_W * (q + r / 2)
-    y = (HEX_H * 0.75) * r
+    # Pointy-top axial coordinates.
+    # GAP spreads the invisible grid a little, while preserving the six-neighbour logic.
+    x = (HEX_W + GAP) * (q + r / 2)
+    y = (HEX_H * 0.75 + GAP) * r
     return x, y
 
 def map_bounds(cards):
@@ -169,10 +170,10 @@ def map_bounds(cards):
         return 0, 0, 760, 440
 
     points = [hex_to_pixel(c["q"], c["r"]) for c in placed]
-    min_x = min(x for x, _ in points) - 150
-    max_x = max(x for x, _ in points) + 300
-    min_y = min(y for _, y in points) - 150
-    max_y = max(y for _, y in points) + 300
+    min_x = min(x for x, _ in points) - 170
+    max_x = max(x for x, _ in points) + 320
+    min_y = min(y for _, y in points) - 170
+    max_y = max(y for _, y in points) + 320
 
     return min_x, min_y, max(760, int(max_x - min_x)), max(440, int(max_y - min_y))
 
@@ -193,21 +194,48 @@ def card_html(card, min_x, min_y):
         f'</div></div></div>'
     )
 
+def side_midpoint(card, side, min_x, min_y):
+    x, y = hex_to_pixel(card["q"], card["r"])
+    cx = x - min_x + HEX_W / 2
+    cy = y - min_y + HEX_H / 2
+
+    # Midpoints of the visible sides for a pointy-top hex.
+    offsets = {
+        "→ oikealle": (HEX_W * 0.43, 0),
+        "↗ yläoikealle": (HEX_W * 0.22, -HEX_H * 0.37),
+        "↖ ylävasemmalle": (-HEX_W * 0.22, -HEX_H * 0.37),
+        "← vasemmalle": (-HEX_W * 0.43, 0),
+        "↙ alavasemmalle": (-HEX_W * 0.22, HEX_H * 0.37),
+        "↘ alaoikealle": (HEX_W * 0.22, HEX_H * 0.37),
+    }
+    dx, dy = offsets.get(side, (0, 0))
+    return cx + dx, cy + dy
+
+def opposite_side(side):
+    return {
+        "→ oikealle": "← vasemmalle",
+        "↗ yläoikealle": "↙ alavasemmalle",
+        "↖ ylävasemmalle": "↘ alaoikealle",
+        "← vasemmalle": "→ oikealle",
+        "↙ alavasemmalle": "↗ yläoikealle",
+        "↘ alaoikealle": "↖ ylävasemmalle",
+    }.get(side, "← vasemmalle")
+
 def link_svg(link, min_x, min_y):
     a = get_card(link["from_card_id"])
     b = get_card(link["to_card_id"])
     if not a or not b or not a.get("placed") or not b.get("placed"):
         return ""
 
-    ax, ay = hex_to_pixel(a["q"], a["r"])
-    bx, by = hex_to_pixel(b["q"], b["r"])
+    side = link.get("side", "→ oikealle")
+    x1, y1 = side_midpoint(a, side, min_x, min_y)
+    x2, y2 = side_midpoint(b, opposite_side(side), min_x, min_y)
 
-    x1 = ax - min_x + HEX_W / 2
-    y1 = ay - min_y + HEX_H / 2
-    x2 = bx - min_x + HEX_W / 2
-    y2 = by - min_y + HEX_H / 2
-
-    return f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" class="link-line" />'
+    return (
+        f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" class="link-line" />'
+        f'<circle cx="{x1}" cy="{y1}" r="4" class="link-dot" />'
+        f'<circle cx="{x2}" cy="{y2}" r="4" class="link-dot" />'
+    )
 
 def render_map():
     placed = [c for c in st.session_state.cards if c.get("placed")]
@@ -279,7 +307,13 @@ h1 { margin-bottom: 0.2rem; }
     pointer-events:none;
 }
 .link-line {
-    stroke:#adb5bd;
+    stroke:#748ffc;
+    stroke-width:3;
+    stroke-linecap:round;
+}
+.link-dot {
+    fill:#748ffc;
+    stroke:white;
     stroke-width:2;
 }
 .hex-wrap {
@@ -374,10 +408,10 @@ with left:
             st.session_state.links = []
             st.session_state.next_id = 1
             st.session_state.message = "Kartta tyhjennetty."
+            st.session_state.last_source_id = None
             st.rerun()
 
     st.divider()
-
     st.subheader("2. Kytke sivuun")
 
     if len(st.session_state.cards) < 2:
@@ -386,13 +420,19 @@ with left:
         placed_cards = [c for c in st.session_state.cards if c.get("placed")]
         all_cards = st.session_state.cards
 
-        source_options = {f'#{c["id"]} {c["title"]}': c["id"] for c in placed_cards}
-        target_options = {f'#{c["id"]} {c["title"]}': c["id"] for c in all_cards}
+        source_labels = [f'#{c["id"]} {c["title"]}' for c in placed_cards]
+        source_ids = [c["id"] for c in placed_cards]
+        default_source_index = 0
+        if st.session_state.last_source_id in source_ids:
+            default_source_index = source_ids.index(st.session_state.last_source_id)
+
+        target_labels = [f'#{c["id"]} {c["title"]}' for c in all_cards]
+        target_ids = [c["id"] for c in all_cards]
 
         with st.form("connect_form"):
-            source_label = st.selectbox("Mihin korttiin?", list(source_options.keys()))
+            source_label = st.selectbox("Mihin korttiin?", source_labels, index=default_source_index)
             side = st.radio("Mille sivulle?", list(SIDES.keys()), horizontal=False)
-            target_label = st.selectbox("Mikä kortti siihen tulee?", list(target_options.keys()))
+            target_label = st.selectbox("Mikä kortti siihen tulee?", target_labels)
 
             with st.expander("Tarkempi yhteys, jos tarvitaan"):
                 rel_type = st.selectbox("Yhteyden tyyppi", REL_TYPES)
@@ -400,32 +440,30 @@ with left:
                 force_move = st.checkbox("Siirrä, jos kortti on jo kartalla")
             submitted = st.form_submit_button("Kytke")
             if submitted:
-                connect_cards(source_options[source_label], target_options[target_label], side, rel_type, explanation, force_move)
+                connect_cards(
+                    source_ids[source_labels.index(source_label)],
+                    target_ids[target_labels.index(target_label)],
+                    side,
+                    rel_type,
+                    explanation,
+                    force_move,
+                )
                 st.rerun()
 
     st.divider()
-
     st.subheader("Sijoittamattomat")
     unplaced = [c for c in st.session_state.cards if not c.get("placed")]
     if not unplaced:
         st.caption("Ei sijoittamattomia kortteja.")
     else:
         for c in unplaced:
-            st.markdown(
-                f'<div class="unplaced"><b>#{c["id"]} {html.escape(c["title"])}</b></div>',
-                unsafe_allow_html=True,
-            )
+            st.markdown(f'<div class="unplaced"><b>#{c["id"]} {html.escape(c["title"])}</b></div>', unsafe_allow_html=True)
 
     with st.expander("Värit ja vienti"):
         for name, color in TYPE_COLORS.items():
             st.markdown(f'<span class="legend-dot" style="background:{color};"></span>{name}', unsafe_allow_html=True)
 
-        st.download_button(
-            "Lataa JSON",
-            data=export_json(),
-            file_name="ruokavirta_hexmap.json",
-            mime="application/json",
-        )
+        st.download_button("Lataa JSON", data=export_json(), file_name="ruokavirta_hexmap.json", mime="application/json")
 
         if st.session_state.cards:
             st.download_button(
